@@ -98,7 +98,7 @@ initializeVideo(io, peerServer);
    =========================================================== */
 server.listen(PORT, () => {
   console.log(`🌐 [STARTUP] Servidor de video corriendo en puerto ${PORT}`);
-  console.log(`🔗 [STARTUP] Peer.js disponible en: https://realtimevideobackend.onrender.com/`);  // Ajusta la URL de Render
+  console.log(`🔗 [STARTUP] Peer.js disponible en: https://realtimevideocambackend.onrender.com/`);
   console.log(`🚀 [STARTUP] Health check: https://realtimevideobackend.onrender.com/api/health`);
   console.log(`🌍 [STARTUP] CORS habilitado para:`, [
     'https://frontend-real-time.vercel.app',

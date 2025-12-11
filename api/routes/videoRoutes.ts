@@ -45,8 +45,8 @@ router.get('/peerjs/health', (req, res) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.json({
     status: 'running',
-    endpoint: 'https://realtimevideobackend.onrender.com/peerjs',  // Ajusta la URL de Render para video
-    webSocketEndpoint: 'wss://realtimevideobackend.onrender.com/peerjs',
+    endpoint: 'https://realtimevideocambackend.onrender.com/peerjs',
+    webSocketEndpoint: 'wss://realtimevideocambackend.onrender.com/peerjs',
     cors: 'enabled',
     timestamp: new Date().toISOString()
   });
