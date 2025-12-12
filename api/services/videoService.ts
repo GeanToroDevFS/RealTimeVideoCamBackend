@@ -123,12 +123,7 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
 
                 // 🔥 NOTIFICAR A OTROS SOBRE NUEVO PARTICIPANTE
                 const existingPeers = Array.from(peers).filter(p => p !== peerId);
-                socket.to(meetingId).emit('peer-joined', {
-                    peerId: peerId,
-                    userId: userId,
-                    displayName: displayName,
-                    socketId: socket.id
-                });
+                socket.to(meetingId).emit('peer-joined', peerId);  // ✅ Solo el string
 
                 // 🔥 ENVIAR LISTA COMPLETA DE PARTICIPANTES AL NUEVO USUARIO
                 const participants = existingPeers.map(peerId => {
@@ -148,6 +143,7 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
                     success: true,
                     meetingId,
                     peerId,
+                    peers: existingPeers,
                     participants: participants
                 });
 

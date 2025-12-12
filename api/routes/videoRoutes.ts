@@ -11,7 +11,7 @@ const allowedOrigins = [
   'https://realtime-frontend.vercel.app'
 ];
 
-router.get('/', (req, res) => {
+router.get('/health', (req, res) => {
   console.log('🚀 [HEALTH] Solicitud de health check en video');
   res.header('Content-Type', 'text/plain');
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
