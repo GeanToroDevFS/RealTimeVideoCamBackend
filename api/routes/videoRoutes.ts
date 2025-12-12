@@ -62,4 +62,18 @@ router.get('/ice-servers', (req, res) => {
   });
 });
 
+router.get('/debug/headers', (req, res) => {
+  console.log('🔍 [HEADERS] Solicitud recibida:', req.headers);
+
+  res.json({
+    method: req.method,
+    origin: req.headers.origin,
+    host: req.headers.host,
+    userAgent: req.headers['user-agent'],
+    headers: req.headers,
+    yourBackendUrl: 'https://realtimevideocambackend.onrender.com',
+    timestamp: new Date().toISOString()
+  });
+});
+
 export default router;

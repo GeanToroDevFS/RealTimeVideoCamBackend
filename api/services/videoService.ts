@@ -1,185 +1,309 @@
-/**
- * Video service using Socket.IO and Peer.js for real-time video transmission in meetings.
- *
- * This service handles Peer.js connections for WebRTC video calls, integrated with Socket.IO
- * for signaling and room management. It validates meetings via Firestore and manages peer connections.
- * Supports 2-10 users per meeting with real-time video.
- */
-
 import { Server as SocketIOServer } from 'socket.io';
 import { ExpressPeerServer } from 'peer';
 import { db } from '../config/firebase';
 
 /**
  * Map to track active peer connections per meeting.
- * Key: meetingId, Value: Set of peer IDs in the meeting.
  */
 const activePeers = new Map<string, Set<string>>();
-
-// ✅ NUEVO: Relación socket.id ↔ peerId
 const socketToPeer = new Map<string, string>();
+const peerToSocket = new Map<string, string>(); // 🔥 NUEVO: para búsqueda inversa
+const peerInfo = new Map<string, { userId: string, displayName: string }>(); // 🔥 NUEVO: info de peer
 
 /**
  * Initialize video service with Socket.IO and Peer.js.
- *
- * @param {SocketIOServer} io - The Socket.IO server instance.
- * @param {any} peerServer - The Peer.js server instance.
  */
 export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
     // Peer.js server events
     peerServer.on('connection', (client: any) => {
         console.log(`🔗 [VIDEO] Peer connected: ${client.id}`);
+        
+        // 🔥 ENVIAR ICE SERVERS AL CLIENTE
+        try {
+            client.send({
+                type: 'ice-servers',
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            });
+        } catch (error) {
+            console.error('Error enviando ICE servers:', error);
+        }
     });
 
     peerServer.on('disconnect', (client: any) => {
         console.log(`🔌 [VIDEO] Peer disconnected: ${client.id}`);
-        // Remove from all meetings
+        
+        // Buscar socket asociado
+        const socketId = peerToSocket.get(client.id);
+        if (socketId) {
+            peerToSocket.delete(client.id);
+            socketToPeer.delete(socketId);
+        }
+        
+        // Eliminar de todas las reuniones
         for (const [meetingId, peers] of activePeers) {
             if (peers.has(client.id)) {
                 peers.delete(client.id);
-                io.to(meetingId).emit('peer-disconnected', client.id);
+                peerInfo.delete(client.id);
+                
+                // Notificar a todos en la sala
+                io.to(meetingId).emit('peer-disconnected', { 
+                    peerId: client.id,
+                    participants: Array.from(peers).map(p => ({
+                        peerId: p,
+                        ...peerInfo.get(p)
+                    }))
+                });
+                
                 console.log(`🚪 [VIDEO] Peer ${client.id} removed from meeting ${meetingId}`);
+                
+                if (peers.size === 0) {
+                    activePeers.delete(meetingId);
+                }
             }
         }
     });
 
-    // Socket.IO events for video signaling
+    // Socket.IO events
     io.on('connection', (socket) => {
         console.log(`🔗 [VIDEO] Socket connected: ${socket.id}`);
 
-        // Autenticación del socket
         socket.on('authenticate', (data: { token: string }) => {
             console.log(`🔐 [VIDEO] Socket ${socket.id} autenticado`);
         });
 
-        socket.on('join-video-room', async (data: { meetingId: string; peerId: string; userId: string }) => {
-            const { meetingId, peerId, userId } = data;
-            console.log(`🔹 [VIDEO] User ${socket.id} (${userId}) joining video in meeting: ${meetingId}`);
+        // 🔥 EVENTO MEJORADO: Unirse a sala de video
+        socket.on('join-video-room', async (data: { 
+            meetingId: string; 
+            peerId: string; 
+            userId: string;
+            displayName?: string;
+        }) => {
+            const { meetingId, peerId, userId, displayName = 'Usuario' } = data;
+            console.log(`🔹 [VIDEO] User ${userId} (${socket.id}) joining video as peer ${peerId} in meeting: ${meetingId}`);
 
             try {
-                // Validate meeting exists and is active
+                // Validar reunión
                 const meetingDoc = await db.collection('meetings').doc(meetingId).get();
                 if (!meetingDoc.exists || meetingDoc.data()?.status !== 'active') {
-                    socket.emit('video-error', 'Meeting not found or inactive');
+                    socket.emit('video-error', { 
+                        code: 'MEETING_INACTIVE', 
+                        message: 'Reunión no encontrada o inactiva' 
+                    });
                     return;
                 }
 
-                // Limit to 10 users
-                if (!activePeers.has(meetingId)) activePeers.set(meetingId, new Set());
+                // Limitar a 10 usuarios
+                if (!activePeers.has(meetingId)) {
+                    activePeers.set(meetingId, new Set());
+                }
                 const peers = activePeers.get(meetingId)!;
 
                 if (peers.size >= 10) {
-                    socket.emit('video-error', 'Meeting full (maximum 10 users)');
+                    socket.emit('video-error', { 
+                        code: 'MEETING_FULL', 
+                        message: 'Reunión llena (máximo 10 usuarios)' 
+                    });
                     return;
                 }
 
+                // Unirse a la sala
                 socket.join(meetingId);
-
+                
+                // Guardar relaciones
                 peers.add(peerId);
-                socketToPeer.set(socket.id, peerId); // ✅ NUEVO: guardar relación
+                socketToPeer.set(socket.id, peerId);
+                peerToSocket.set(peerId, socket.id);
+                peerInfo.set(peerId, { userId, displayName });
 
                 console.log(`✅ [VIDEO] Peer ${peerId} joined video room: ${meetingId}`);
+                console.log(`👥 [VIDEO] Participants in room ${meetingId}:`, Array.from(peers));
 
-                // Notify others in the room to connect via Peer.js
-                socket.to(meetingId).emit('peer-joined', peerId);
+                // 🔥 NOTIFICAR A OTROS SOBRE NUEVO PARTICIPANTE
+                const existingPeers = Array.from(peers).filter(p => p !== peerId);
+                socket.to(meetingId).emit('peer-joined', {
+                    peerId: peerId,
+                    userId: userId,
+                    displayName: displayName,
+                    socketId: socket.id
+                });
 
-                // Send existing peers to the new user for connection
+                // 🔥 ENVIAR LISTA COMPLETA DE PARTICIPANTES AL NUEVO USUARIO
+                const participants = existingPeers.map(peerId => {
+                    const info = peerInfo.get(peerId);
+                    const socketId = peerToSocket.get(peerId);
+                    return {
+                        peerId,
+                        socketId: socketId || peerId,
+                        userId: info?.userId || peerId,
+                        displayName: info?.displayName || 'Usuario',
+                        isAudioEnabled: true, // Por defecto
+                        isVideoEnabled: false // Por defecto (según logs)
+                    };
+                });
+
                 socket.emit('video-joined', {
-                    peers: Array.from(peers).filter(p => p !== peerId),
-                    meetingId
+                    success: true,
+                    meetingId,
+                    peerId,
+                    participants: participants
                 });
 
-                // Enviar lista de participantes al unirse
-                const peersInRoom = Array.from(activePeers.get(meetingId) || []);
+                // 🔥 ENVIAR LISTA ACTUALIZADA A TODOS
+                const allParticipants = Array.from(peers).map(p => {
+                    const info = peerInfo.get(p);
+                    const sId = peerToSocket.get(p);
+                    return {
+                        peerId: p,
+                        socketId: sId || p,
+                        userId: info?.userId || p,
+                        displayName: info?.displayName || 'Usuario',
+                        isVideoEnabled: false // 🔥 ESTO ES IMPORTANTE: inicializar como false
+                    };
+                });
+
+                // Enviar al nuevo usuario
                 socket.emit('room-participants', {
-                    participants: peersInRoom
-                        .filter(p => p !== peerId)
-                        .map(p => ({ socketId: p, odiserId: p, displayName: 'User' }))
+                    participants: allParticipants.filter(p => p.peerId !== peerId)
                 });
 
+                // Enviar a todos los demás sobre el nuevo usuario
                 socket.to(meetingId).emit('participant-joined', {
+                    peerId: peerId,
                     socketId: socket.id,
-                    odiserId: peerId,
-                    displayName: 'User'
+                    userId: userId,
+                    displayName: displayName,
+                    isVideoEnabled: false // 🔥 INICIALIZAR COMO FALSE
+                });
+
+                io.to(meetingId).emit('room-participants', {
+                    participants: allParticipants
                 });
 
             } catch (error) {
                 console.error('❌ [VIDEO] Error joining video room:', error);
-                socket.emit('video-error', 'Internal server error');
+                socket.emit('video-error', { 
+                    code: 'INTERNAL_ERROR', 
+                    message: 'Error interno del servidor' 
+                });
             }
         });
 
+        // 🔥 EVENTO MEJORADO: Salir de sala
         socket.on('leave-video-room', (data: { meetingId: string; peerId: string }) => {
             const { meetingId, peerId } = data;
-            console.log(`🚪 [VIDEO] User ${peerId} leaving video in meeting: ${meetingId}`);
+            console.log(`🚪 [VIDEO] Peer ${peerId} leaving video in meeting: ${meetingId}`);
 
             socket.leave(meetingId);
+            
+            // Limpiar relaciones
+            socketToPeer.delete(socket.id);
+            peerToSocket.delete(peerId);
+            peerInfo.delete(peerId);
+            
             const peers = activePeers.get(meetingId);
-
             if (peers) {
                 peers.delete(peerId);
-                io.to(meetingId).emit('peer-disconnected', peerId);
+                
+                // Notificar a los demás
+                io.to(meetingId).emit('peer-disconnected', {
+                    peerId: peerId,
+                    participants: Array.from(peers).map(p => ({
+                        peerId: p,
+                        ...peerInfo.get(p)
+                    }))
+                });
 
                 if (peers.size === 0) {
                     activePeers.delete(meetingId);
                 }
             }
-
-            // ✅ NUEVO
-            socketToPeer.delete(socket.id);
         });
 
-        socket.on('end-meeting', (data: { meetingId: string }) => {
-            const { meetingId } = data;
-
-            console.log(`🔴 [VIDEO] Meeting ${meetingId} finalizada por el host`);
-
-            // Forzar desconexión
-            io.to(meetingId).emit('force-disconnect');
+        // 🔥 EVENTO NUEVO: Actualizar estado de medios
+        socket.on('update-media-state', (data: {
+            meetingId: string;
+            peerId: string;
+            isAudioEnabled?: boolean;
+            isVideoEnabled?: boolean;
+        }) => {
+            const { meetingId, peerId, isAudioEnabled, isVideoEnabled } = data;
+            
+            socket.to(meetingId).emit('media-state-changed', {
+                peerId,
+                isAudioEnabled,
+                isVideoEnabled,
+                timestamp: new Date().toISOString()
+            });
+            
+            console.log(`🎚️ [VIDEO] Media state updated for ${peerId}:`, {
+                audio: isAudioEnabled,
+                video: isVideoEnabled
+            });
         });
 
-        // WebRTC signaling events
+        // WebRTC signaling
         socket.on('webrtc-offer', (data: { targetSocketId: string; offer: RTCSessionDescriptionInit }) => {
             const { targetSocketId, offer } = data;
             console.log(`📞 [VIDEO] Forwarding offer from ${socket.id} to ${targetSocketId}`);
-            io.to(targetSocketId).emit('webrtc-offer', { senderSocketId: socket.id, offer });
+            io.to(targetSocketId).emit('webrtc-offer', { 
+                senderSocketId: socket.id, 
+                senderPeerId: socketToPeer.get(socket.id),
+                offer 
+            });
         });
 
         socket.on('webrtc-answer', (data: { targetSocketId: string; answer: RTCSessionDescriptionInit }) => {
             const { targetSocketId, answer } = data;
             console.log(`📞 [VIDEO] Forwarding answer from ${socket.id} to ${targetSocketId}`);
-            io.to(targetSocketId).emit('webrtc-answer', { senderSocketId: socket.id, answer });
+            io.to(targetSocketId).emit('webrtc-answer', { 
+                senderSocketId: socket.id,
+                senderPeerId: socketToPeer.get(socket.id),
+                answer 
+            });
         });
 
         socket.on('ice-candidate', (data: { targetSocketId: string; candidate: RTCIceCandidateInit }) => {
             const { targetSocketId, candidate } = data;
             console.log(`🧊 [VIDEO] Forwarding ICE candidate from ${socket.id} to ${targetSocketId}`);
-            io.to(targetSocketId).emit('ice-candidate', { senderSocketId: socket.id, candidate });
-        });
-
-        socket.on('media-state-change', (data: { roomId: string; isVideoEnabled: boolean }) => {
-            const { roomId, isVideoEnabled } = data;
-            socket.to(roomId).emit('media-state-changed', { socketId: socket.id, isVideoEnabled });
+            io.to(targetSocketId).emit('ice-candidate', { 
+                senderSocketId: socket.id,
+                senderPeerId: socketToPeer.get(socket.id),
+                candidate 
+            });
         });
 
         socket.on('disconnect', (reason) => {
             console.log(`🔌 [VIDEO] Socket disconnected: ${socket.id}, reason: ${reason}`);
 
             const peerId = socketToPeer.get(socket.id);
+            
+            if (peerId) {
+                // Limpiar todas las reuniones donde este peer estaba
+                for (const [meetingId, peers] of activePeers) {
+                    if (peers.has(peerId)) {
+                        peers.delete(peerId);
+                        peerInfo.delete(peerId);
+                        peerToSocket.delete(peerId);
+                        
+                        io.to(meetingId).emit('peer-disconnected', {
+                            peerId: peerId,
+                            participants: Array.from(peers).map(p => ({
+                                peerId: p,
+                                ...peerInfo.get(p)
+                            }))
+                        });
 
-            for (const [meetingId, peers] of activePeers) {
-                if (peerId && peers.has(peerId)) {
-                    peers.delete(peerId);
-
-                    io.to(meetingId).emit('peer-disconnected', peerId);
-
-                    if (peers.size === 0) {
-                        activePeers.delete(meetingId);
+                        if (peers.size === 0) {
+                            activePeers.delete(meetingId);
+                        }
                     }
                 }
+                
+                socketToPeer.delete(socket.id);
             }
-
-            socketToPeer.delete(socket.id);
         });
 
         socket.on('error', (error) => {
