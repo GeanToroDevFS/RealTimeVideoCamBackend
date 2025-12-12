@@ -11,7 +11,7 @@ const allowedOrigins = [
   'https://realtime-frontend.vercel.app'
 ];
 
-router.get('/health', (req, res) => {
+router.get('/', (req, res) => {
   console.log('🚀 [HEALTH] Solicitud de health check en video');
   res.header('Content-Type', 'text/plain');
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
@@ -59,20 +59,6 @@ router.get('/ice-servers', (req, res) => {
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' }
     ]
-  });
-});
-
-router.get('/debug/headers', (req, res) => {
-  console.log('🔍 [HEADERS] Solicitud recibida:', req.headers);
-
-  res.json({
-    method: req.method,
-    origin: req.headers.origin,
-    host: req.headers.host,
-    userAgent: req.headers['user-agent'],
-    headers: req.headers,
-    yourBackendUrl: 'https://realtimevideocambackend.onrender.com',
-    timestamp: new Date().toISOString()
   });
 });
 
