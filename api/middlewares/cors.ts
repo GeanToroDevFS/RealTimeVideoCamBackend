@@ -1,5 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 
+/**
+ * Set of allowed origins that can consume the video backend. Includes production deployments
+ * and common local development environments.
+ */
 const allowedOrigins = [
   'https://frontend-real-time.vercel.app',
   'http://localhost:3000',
@@ -7,14 +11,18 @@ const allowedOrigins = [
   'https://realtime-frontend.vercel.app'
 ];
 
+/**
+ * Options passed directly to the cors middleware. The origin callback keeps Render happy by
+ * allowing subdomains under vercel.app while still logging unexpected origins.
+ */
 export const corsOptions = {
-  origin: (origin: string | undefined, callback: Function) => {  // Corregido: Agregado 'undefined'
+  origin: (origin: string | undefined, callback: Function) => {
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('vercel.app')) {
       callback(null, true);
     } else {
-      console.log('🚫 Origen bloqueado por CORS:', origin);
+      console.log('🚫 Origin blocked by CORS:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -23,6 +31,14 @@ export const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 };
 
+/**
+ * Manual CORS middleware that mirrors corsOptions but adds headers for preflight responses and
+ * allows credentialed requests from the whitelist.
+ *
+ * @param req Express request instance.
+ * @param res Express response instance.
+ * @param next Express next callback.
+ */
 export const corsMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
   if (origin && (allowedOrigins.includes(origin) || origin.includes('vercel.app'))) {

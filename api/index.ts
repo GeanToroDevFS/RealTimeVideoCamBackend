@@ -10,6 +10,11 @@ import { initializeVideo } from './services/videoService';
 import { corsOptions, corsMiddleware } from './middlewares/cors';
 import videoRoutes from './routes/videoRoutes';
 
+/**
+ * Entry point for the RealTime video backend. Sets up Express, Socket.IO, Peer.js, and
+ * shared middleware before delegating real-time behaviour to the video service layer.
+ */
+
 const app = express();
 const server = createServer(app);
 const PORT = process.env.PORT || 10001;  // Cambiado a 10001 para video
@@ -29,6 +34,10 @@ const io = new SocketIOServer(server, {
 /* ===========================================================
    PEER.JS (FIX OBLIGATORIO PARA RENDER)
    =========================================================== */
+/**
+ * Peer.js configuration required for Render deployments. The options keep the server
+ * reachable behind a proxy and expose debugging information during development.
+ */
 const peerOptions: any = {
   path: '/',
   debug: true,
@@ -42,6 +51,12 @@ const peerServer = ExpressPeerServer(server, peerOptions);
 /* ===========================================================
    RUTA MANUAL PARA EVITAR QUE "/" MUESTRE EL JSON DE PEERJS
    =========================================================== */
+/**
+ * Simple health page that prevents the Peer.js server from responding to the root path.
+ *
+ * @param req Express request.
+ * @param res Express response.
+ */
 app.get('/', (req, res) => {
   res.send('Servidor de video funcionando ✔');
 });
@@ -79,6 +94,14 @@ app.use('/api', videoRoutes);
 /* ===========================================================
    MANEJO GLOBAL DE ERRORES
    =========================================================== */
+/**
+ * Global error handler that logs any uncaught error and responds with a consistent payload.
+ *
+ * @param err Captured error object.
+ * @param req Express request instance.
+ * @param res Express response instance.
+ * @param next Next middleware callback (unused, required for signature completeness).
+ */
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('💥 [ERROR] Error no manejado en video:', err.message);
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');

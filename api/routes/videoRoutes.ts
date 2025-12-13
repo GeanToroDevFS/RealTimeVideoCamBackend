@@ -1,6 +1,9 @@
 import express from 'express';
 import { db } from '../config/firebase';
 
+/**
+ * Router exposing operational endpoints used by health checks, debugging tools and WebRTC helpers.
+ */
 const router = express.Router();
 
 const PORT = process.env.PORT || 10001;  // Cambiado para video
@@ -11,6 +14,12 @@ const allowedOrigins = [
   'https://realtime-frontend.vercel.app'
 ];
 
+/**
+ * Basic health endpoint used by uptime monitoring to ensure the video backend is alive.
+ *
+ * @param req Express request.
+ * @param res Express response returning a plaintext report.
+ */
 router.get('/', (req, res) => {
   console.log('🚀 [HEALTH] Solicitud de health check en video');
   res.header('Content-Type', 'text/plain');
@@ -23,6 +32,13 @@ router.get('/', (req, res) => {
     `Timestamp: ${new Date().toISOString()}`);
 });
 
+/**
+ * Provides an at-a-glance view of environment variables and service readiness intended for
+ * debugging deployments.
+ *
+ * @param req Express request.
+ * @param res Express response delivering diagnostic JSON.
+ */
 router.get('/debug', (req, res) => {
   console.log('🔍 [DEBUG] Solicitud de información de debug en video');
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
@@ -40,6 +56,12 @@ router.get('/debug', (req, res) => {
   });
 });
 
+/**
+ * Reports the status of the Peer.js endpoint exposed by the backend.
+ *
+ * @param req Express request.
+ * @param res Express response containing availability data.
+ */
 router.get('/peerjs/health', (req, res) => {
   console.log('📡 [PEER] Health check solicitado');
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
@@ -53,6 +75,12 @@ router.get('/peerjs/health', (req, res) => {
 });
 
 // Nuevo: Endpoint para ICE servers
+/**
+ * Shares STUN server configuration used by the frontend to establish WebRTC connections.
+ *
+ * @param req Express request.
+ * @param res Express response with ICE server definitions.
+ */
 router.get('/ice-servers', (req, res) => {
   res.json({
     iceServers: [

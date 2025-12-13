@@ -15,54 +15,89 @@
 
 import * as admin from 'firebase-admin';
 import dotenv from 'dotenv';
+import { readFileSync } from 'fs';
+import path from 'path';
 
-console.log('🔹 [FIREBASE] Cargando configuración para servidor de video...');
+console.log('🔹 [FIREBASE] Loading configuration for the video server...');
 dotenv.config();
 
 /**
- * Parse the Firebase service account JSON from the environment.
+ * Parses a raw service account string that may be plain JSON or base64 encoded JSON.
  *
- * @returns {admin.ServiceAccount} Parsed service account object.
- * @throws {SyntaxError} If the JSON in FIREBASE_SERVICE_ACCOUNT_KEY is invalid.
+ * @param raw Raw string provided through an environment variable.
+ * @returns Parsed service account when successful, otherwise undefined.
  */
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY!);
-
-console.log('🔍 [FIREBASE] Verificando variables...');
-console.log(' - FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? '✅ OK' : '❌ NO DEFINIDA');
-console.log(' - FIREBASE_SERVICE_ACCOUNT_KEY:', serviceAccount ? '✅ OK' : '❌ NO DEFINIDA');
+const tryParseServiceAccount = (raw: string): admin.ServiceAccount | undefined => {
+  try {
+    return JSON.parse(raw);
+  } catch (jsonError) {
+    try {
+      const decoded = Buffer.from(raw, 'base64').toString('utf8');
+      return JSON.parse(decoded);
+    } catch (base64Error) {
+      console.error('❌ [FIREBASE] Failed to parse the provided credential.');
+      return undefined;
+    }
+  }
+};
 
 /**
- * Ensure required environment variables are present before initializing Firebase.
- * If any required variable is missing, an Error is thrown to prevent the app from continuing.
+ * Loads and parses a service account JSON file. Supports both absolute and relative paths.
  *
- * @throws {Error} If FIREBASE_PROJECT_ID or FIREBASE_SERVICE_ACCOUNT_KEY is missing.
+ * @param filepath Path to the service account file.
+ * @returns Parsed service account when successful, otherwise undefined.
  */
-if (!process.env.FIREBASE_PROJECT_ID || !serviceAccount) {
-  throw new Error('❌ Faltan variables de entorno para conectar con Firebase.');
+const loadServiceAccountFromPath = (filepath: string): admin.ServiceAccount | undefined => {
+  try {
+    const absolutePath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const fileContents = readFileSync(absolutePath, 'utf8');
+    return tryParseServiceAccount(fileContents);
+  } catch (error) {
+    console.error('❌ [FIREBASE] Failed to read the provided service account file:', error);
+    return undefined;
+  }
+};
+
+const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+
+let serviceAccount: admin.ServiceAccount | undefined;
+
+if (rawServiceAccount) {
+  serviceAccount = tryParseServiceAccount(rawServiceAccount);
 }
 
-/**
- * Initialize the Firebase Admin SDK with the provided service account and project ID.
- * The initialization attaches credentials and project configuration to the global admin instance.
- */
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  projectId: process.env.FIREBASE_PROJECT_ID,
-});
+if (!serviceAccount && serviceAccountPath) {
+  serviceAccount = loadServiceAccountFromPath(serviceAccountPath);
+}
 
-/**
- * Firestore client instance to perform database operations for video.
- * @type {admin.firestore.Firestore}
- */
-const db = admin.firestore();
+const hasProjectId = Boolean(process.env.FIREBASE_PROJECT_ID);
+const hasServiceAccount = Boolean(serviceAccount);
 
-/**
- * Firebase Authentication client instance to manage users and tokens (for future use).
- * @type {admin.auth.Auth}
- */
-const auth = admin.auth();
+console.log('🔍 [FIREBASE] Checking environment variables...');
+console.log(' - FIREBASE_PROJECT_ID:', hasProjectId ? '✅ OK' : '❌ MISSING');
+console.log(' - FIREBASE_SERVICE_ACCOUNT:', hasServiceAccount ? '✅ OK' : '❌ MISSING');
 
-console.log('✅ [FIREBASE] Cliente inicializado correctamente para servidor de video.');
+/** Firestore client used by the video services. Null when Firebase is disabled. */
+let db: admin.firestore.Firestore | null = null;
+/** Firebase Authentication client exposed for future integration. Null when disabled. */
+let auth: admin.auth.Auth | null = null;
+/** Indicates whether Firebase-related functionality is available in the current run. */
+let isFirebaseEnabled = false;
 
-// Export the db and auth instances
-export { db, auth };
+if (hasProjectId && hasServiceAccount) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount!),
+    projectId: process.env.FIREBASE_PROJECT_ID,
+  });
+
+  db = admin.firestore();
+  auth = admin.auth();
+  isFirebaseEnabled = true;
+
+  console.log('✅ [FIREBASE] Firebase client initialized successfully for the video server.');
+} else {
+  console.warn('⚠️ [FIREBASE] Firebase was not initialized. Firestore validations will be skipped.');
+}
+
+export { db, auth, isFirebaseEnabled };
