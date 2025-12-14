@@ -14,6 +14,26 @@ const allowedOrigins = [
   'https://realtime-frontend.vercel.app'
 ];
 
+router.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else if (!origin) {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  res.header('Vary', 'Origin');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+
+  next();
+});
+
 /**
  * Basic health endpoint used by uptime monitoring to ensure the video backend is alive.
  *
@@ -23,7 +43,6 @@ const allowedOrigins = [
 router.get('/', (req, res) => {
   console.log('🚀 [HEALTH] Solicitud de health check en video');
   res.header('Content-Type', 'text/plain');
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.send('🚀 Backend de video para RealTime funcionando correctamente.\n' +
     'Servicio: RealTime Video Backend\n' +
     `Puerto: ${PORT}\n` +
@@ -41,7 +60,6 @@ router.get('/', (req, res) => {
  */
 router.get('/debug', (req, res) => {
   console.log('🔍 [DEBUG] Solicitud de información de debug en video');
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.json({
     environment: process.env.NODE_ENV || 'development',
     port: PORT,
@@ -64,7 +82,6 @@ router.get('/debug', (req, res) => {
  */
 router.get('/peerjs/health', (req, res) => {
   console.log('📡 [PEER] Health check solicitado');
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.json({
     status: 'running',
     endpoint: 'https://realtimevideocambackend.onrender.com/peerjs',

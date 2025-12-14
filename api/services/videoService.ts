@@ -10,17 +10,24 @@ import { Server as SocketIOServer } from 'socket.io';
 import { ExpressPeerServer } from 'peer';
 import { db, isFirebaseEnabled } from '../config/firebase';
 
+type MeetingPeer = {
+    peerId: string;
+    socketId: string;
+    userId: string;
+    displayName: string;
+};
+
 /**
  * Map to track active peer connections per meeting.
- * Key: meetingId, Value: Set of peer IDs in the meeting.
+ * Key: meetingId, Value: Map of peer IDs to participant metadata.
  */
-const activePeers = new Map<string, Set<string>>();
+const activePeers = new Map<string, Map<string, MeetingPeer>>();
 
 /**
  * Maps a socket identifier to the last Peer.js identifier announced by the client.
  * Used to make sure disconnections propagate correctly to Peer.js participants.
  */
-const socketToPeer = new Map<string, string>();
+const socketToPeer = new Map<string, { meetingId: string; peerId: string }>();
 
 /**
  * Initialize video service with Socket.IO and Peer.js.
@@ -34,7 +41,7 @@ const socketToPeer = new Map<string, string>();
  * @param io Socket.IO server shared across the application.
  * @param peerServer Peer.js middleware instance attached to the HTTP server.
  */
-export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
+export const initializeVideo = (io: SocketIOServer, peerServer: ReturnType<typeof ExpressPeerServer>) => {
     // Peer.js server events
     peerServer.on('connection', (client: any) => {
         console.log(`🔗 [VIDEO] Peer connected: ${client.id}`);
@@ -44,10 +51,19 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
         console.log(`🔌 [VIDEO] Peer disconnected: ${client.id}`);
         // Remove from all meetings
         for (const [meetingId, peers] of activePeers) {
-            if (peers.has(client.id)) {
-                peers.delete(client.id);
+            if (peers.delete(client.id)) {
                 io.to(meetingId).emit('peer-disconnected', client.id);
                 console.log(`🚪 [VIDEO] Peer ${client.id} removed from meeting ${meetingId}`);
+
+                if (peers.size === 0) {
+                    activePeers.delete(meetingId);
+                }
+
+                for (const [socketId, mapping] of socketToPeer) {
+                    if (mapping.peerId === client.id && mapping.meetingId === meetingId) {
+                        socketToPeer.delete(socketId);
+                    }
+                }
             }
         }
     });
@@ -72,8 +88,8 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
          * @param data.peerId Peer.js identifier for WebRTC media exchange.
          * @param data.userId Internal user identifier, used only for logging at the moment.
          */
-        socket.on('join-video-room', async (data: { meetingId: string; peerId: string; userId: string }) => {
-            const { meetingId, peerId, userId } = data;
+        socket.on('join-video-room', async (data: { meetingId: string; peerId: string; userId: string; displayName?: string }) => {
+            const { meetingId, peerId, userId, displayName } = data;
             console.log(`🔹 [VIDEO] User ${socket.id} (${userId}) joining video in meeting: ${meetingId}`);
 
             try {
@@ -89,7 +105,9 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
                 }
 
                 // Limit to 10 users
-                if (!activePeers.has(meetingId)) activePeers.set(meetingId, new Set());
+                if (!activePeers.has(meetingId)) {
+                    activePeers.set(meetingId, new Map());
+                }
                 const peers = activePeers.get(meetingId)!;
 
                 if (peers.size >= 10) {
@@ -97,10 +115,24 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
                     return;
                 }
 
+                // Replace stale entry when the same peer rejoins (e.g. reconnection)
+                if (peers.has(peerId)) {
+                    console.warn(`♻️ [VIDEO] Replacing existing peer ${peerId} in meeting ${meetingId}`);
+                    peers.delete(peerId);
+                }
+
                 socket.join(meetingId);
 
-                peers.add(peerId);
-                socketToPeer.set(socket.id, peerId); // ✅ NUEVO: guardar relación
+                const fallbackTag = userId ? userId.slice(-4).toUpperCase() : 'INVIT';
+                const safeDisplayName = (displayName || '').trim() || `Participante ${fallbackTag}`;
+
+                peers.set(peerId, {
+                    peerId,
+                    socketId: socket.id,
+                    userId,
+                    displayName: safeDisplayName,
+                });
+                socketToPeer.set(socket.id, { meetingId, peerId });
 
                 console.log(`✅ [VIDEO] Peer ${peerId} joined video room: ${meetingId}`);
 
@@ -109,22 +141,28 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
 
                 // Send existing peers to the new user for connection
                 socket.emit('video-joined', {
-                    peers: Array.from(peers).filter(p => p !== peerId),
+                    peers: Array.from(peers.keys()).filter(p => p !== peerId),
                     meetingId
                 });
 
                 // Send current participants when the user joins the room
-                const peersInRoom = Array.from(activePeers.get(meetingId) || []);
+                const peersInRoom = Array.from(activePeers.get(meetingId)?.values() || []);
                 socket.emit('room-participants', {
                     participants: peersInRoom
-                        .filter(p => p !== peerId)
-                        .map(p => ({ socketId: p, odiserId: p, displayName: 'User' }))
+                        .filter(p => p.peerId !== peerId)
+                        .map(p => ({
+                            socketId: p.socketId,
+                            odiserId: p.peerId,
+                            userId: p.userId,
+                            displayName: p.displayName,
+                        }))
                 });
 
                 socket.to(meetingId).emit('participant-joined', {
                     socketId: socket.id,
                     odiserId: peerId,
-                    displayName: 'User'
+                    userId,
+                    displayName: safeDisplayName,
                 });
 
             } catch (error) {
@@ -147,11 +185,12 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
             const peers = activePeers.get(meetingId);
 
             if (peers) {
-                peers.delete(peerId);
-                io.to(meetingId).emit('peer-disconnected', peerId);
+                if (peers.delete(peerId)) {
+                    io.to(meetingId).emit('peer-disconnected', peerId);
 
-                if (peers.size === 0) {
-                    activePeers.delete(meetingId);
+                    if (peers.size === 0) {
+                        activePeers.delete(meetingId);
+                    }
                 }
             }
 
@@ -229,21 +268,22 @@ export const initializeVideo = (io: SocketIOServer, peerServer: any) => {
         socket.on('disconnect', (reason) => {
             console.log(`🔌 [VIDEO] Socket disconnected: ${socket.id}, reason: ${reason}`);
 
-            const peerId = socketToPeer.get(socket.id);
+            const details = socketToPeer.get(socket.id);
 
-            for (const [meetingId, peers] of activePeers) {
-                if (peerId && peers.has(peerId)) {
-                    peers.delete(peerId);
+            if (details) {
+                const { meetingId, peerId } = details;
+                const peers = activePeers.get(meetingId);
 
+                if (peers && peers.delete(peerId)) {
                     io.to(meetingId).emit('peer-disconnected', peerId);
 
                     if (peers.size === 0) {
                         activePeers.delete(meetingId);
                     }
                 }
-            }
 
-            socketToPeer.delete(socket.id);
+                socketToPeer.delete(socket.id);
+            }
         });
 
         /**
